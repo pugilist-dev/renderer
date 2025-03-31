@@ -1,0 +1,12 @@
+# Venv 
+.venv/
+
+# Render images
+renders/
+
+# Data
+data/
+
+# Logs
+logs/
+
