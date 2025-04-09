@@ -45,68 +45,91 @@ class ObjectRenderer:
         z = radius * np.cos(phi)
         
         return x, y, z
-
+    
     def render_object(self, obj_path):
-        """Render a single object and save the image"""
-        # Load the mesh
-        mesh = trimesh.load(obj_path)
+        """Render a single textured object and save the image"""
+        # Load the mesh with texture and materials
+        mesh = trimesh.load(obj_path, force='mesh', process=False)
+
+        if not isinstance(mesh, trimesh.Trimesh):
+            print(f"Skipping non-trimesh object: {obj_path}")
+            return
+
         print(f"Mesh loaded: vertices={len(mesh.vertices)}, faces={len(mesh.faces)}")
-        
+
         # Center and scale the mesh
         mesh.vertices -= mesh.center_mass
         scale = 1.0 / max(mesh.vertices.max(axis=0) - mesh.vertices.min(axis=0))
         mesh.vertices *= scale
-        
-        # Clear buffers and setup
+
+        # Load texture if available
+        texture_id = None
+        if hasattr(mesh.visual, 'material') and hasattr(mesh.visual.material, 'image') and mesh.visual.material.image is not None:
+            image = mesh.visual.material.image
+            image_data = image.transpose(Image.FLIP_TOP_BOTTOM).convert('RGBA').tobytes()
+            width, height = image.size
+
+            # Generate OpenGL texture
+            texture_id = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, texture_id)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, image_data)
+
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glEnable(GL_TEXTURE_2D)
+
+        # Clear buffers
         glClearColor(0.5, 0.5, 0.5, 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
-        
-        # Set random viewpoint
+
+        # Set random camera viewpoint
         x, y, z = self.random_viewpoint()
-        print(f"Camera position: ({x}, {y}, {z})")
         gluLookAt(x, y, z, 0, 0, 0, 0, 1, 0)
-        
-        # Set material properties
+
+        # Set lighting material
         glMaterialfv(GL_FRONT_AND_BACK, GL_AMBIENT, (0.4, 0.4, 0.4, 1.0))
         glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, (1.0, 1.0, 1.0, 1.0))
         glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, (1.0, 1.0, 1.0, 1.0))
         glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 50.0)
-        
-        # Draw the mesh with normals
+
+        # Draw textured mesh
         glBegin(GL_TRIANGLES)
-        for face in mesh.faces:
-            # Get vertices of the face
-            vertices = mesh.vertices[face].astype(np.float32)  # Ensure float32 type
-            # Calculate face normal
-            v1, v2, v3 = vertices
-            normal = np.cross(v2 - v1, v3 - v1)
-            normal = normal / np.linalg.norm(normal)
-            normal = normal.astype(np.float32)  # Ensure float32 type
-            
-            # Draw triangle with normal
-            for vertex in vertices:
-                glNormal3fv(normal)
-                glVertex3fv(vertex)
+        for face_idx, face in enumerate(mesh.faces):
+            for i in range(3):
+                vertex_idx = face[i]
+                vertex = mesh.vertices[vertex_idx]
+                
+                if mesh.face_normals is not None:
+                    normal = mesh.face_normals[face_idx]
+                    glNormal3fv(normal.astype(np.float32))
+                
+                if hasattr(mesh.visual, 'uv') and mesh.visual.uv is not None:
+                    uv = mesh.visual.uv[vertex_idx]
+                    glTexCoord2fv(uv.astype(np.float32))
+
+                glVertex3fv(vertex.astype(np.float32))
         glEnd()
-        
-        # Save the rendered image
+
+        # Save rendered image
         pygame.display.flip()
-        
-        # Read pixels directly from OpenGL
         pixels = glReadPixels(0, 0, self.window_size[0], self.window_size[1], GL_RGB, GL_UNSIGNED_BYTE)
-        image = np.frombuffer(pixels, dtype=np.uint8)
-        image = image.reshape(self.window_size[1], self.window_size[0], 3)
-        image = np.flipud(image)  # Flip because OpenGL uses bottom-left origin
-        
-        # Save using PIL
+        image = np.frombuffer(pixels, dtype=np.uint8).reshape(self.window_size[1], self.window_size[0], 3)
+        image = np.flipud(image)
+
         img = Image.fromarray(image)
         base_name = os.path.splitext(os.path.basename(obj_path))[0]
         output_path = f"renders/{base_name}_view_{random.randint(0, 999999):06d}.png"
         os.makedirs("renders", exist_ok=True)
         img.save(output_path)
-        
+
+        # Clean up texture
+        if texture_id:
+            glDeleteTextures([texture_id])
+            glDisable(GL_TEXTURE_2D)
+
         return output_path
+
 
     def render_all_objects(self):
         """Render all objects in the data directory"""
